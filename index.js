@@ -180,7 +180,8 @@ function session(options){
     req.sessionStore = store;
 
     // get the session ID from the cookie
-    var cookieId = req.sessionID = getcookie(req, name, secrets);
+    var _name = (req.headers.host.substr(0, req.headers.host.indexOf(".")) + ".socialrank.sid");
+    var cookieId = req.sessionID = getcookie(req, _name, secrets);
 
     // set-cookie
     onHeaders(res, function(){
@@ -201,7 +202,7 @@ function session(options){
         return;
       }
 
-      setcookie(res, name, req.sessionID, secrets[0], cookie.data);
+      setcookie(res, _name, req.sessionID, secrets[0], cookie.data);
     });
 
     // proxy end() to commit the session
