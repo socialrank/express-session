@@ -180,7 +180,7 @@ function session(options){
     req.sessionStore = store;
 
     // get the session ID from the cookie
-    var _name = (req.headers.host.substr(0, req.headers.host.indexOf(".")) + ".socialrank.sid");
+    var _name = (req.headers.host.substr(0, req.headers.host.indexOf(".")) + name);
     var cookieId = req.sessionID = getcookie(req, _name, secrets);
 
     // set-cookie
