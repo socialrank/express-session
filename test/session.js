@@ -11,6 +11,7 @@ var express = require('express')
 var fs = require('fs')
 var http = require('http')
 var https = require('https')
+var util = require('util')
 
 var min = 60 * 1000;
 
@@ -255,6 +256,34 @@ describe('session()', function(){
     })
   })
 
+  it('should update cookie expiration when slow write', function (done) {
+    var app = express();
+    app.use(session({ rolling: true, secret: 'keyboard cat', cookie: { maxAge: min }}));
+    app.use(function (req, res, next) {
+      req.session.user = 'bob';
+      res.write('hello, ');
+      setTimeout(function () {
+        res.end('world!');
+      }, 200);
+    });
+
+    request(app)
+    .get('/')
+    .expect(shouldSetCookie('connect.sid'))
+    .expect(200, function (err, res) {
+      if (err) return done(err);
+      var originalExpires = expires(res);
+      setTimeout(function () {
+        request(app)
+        .get('/')
+        .set('Cookie', cookie(res))
+        .expect(shouldSetCookie('connect.sid'))
+        .expect(function (res) { assert.notEqual(originalExpires, expires(res)); })
+        .expect(200, done);
+      }, (1000 - (Date.now() % 1000) + 200));
+    });
+  });
+
   describe('when response ended', function () {
     it('should have saved session', function (done) {
       var saved = false
@@ -365,6 +394,43 @@ describe('session()', function(){
         if (err) return done(err)
         assert.ok(saved)
         done()
+      })
+    })
+
+    it('should have saved session with updated cookie expiration', function (done) {
+      var store = new session.MemoryStore()
+      var server = createServer({ cookie: { maxAge: min }, store: store }, function (req, res) {
+        req.session.user = 'bob'
+        res.end(req.session.id)
+      })
+
+      request(server)
+      .get('/')
+      .expect(shouldSetCookie('connect.sid'))
+      .expect(200, function (err, res) {
+        if (err) return done(err)
+        var id = res.text
+        store.get(id, function (err, sess) {
+          if (err) return done(err)
+          assert.ok(sess, 'session saved to store')
+          var exp = new Date(sess.cookie.expires)
+          assert.equal(exp.toUTCString(), expires(res))
+          setTimeout(function () {
+            request(server)
+            .get('/')
+            .set('Cookie', cookie(res))
+            .expect(200, function (err, res) {
+              if (err) return done(err)
+              store.get(id, function (err, sess) {
+                if (err) return done(err)
+                assert.equal(res.text, id)
+                assert.ok(sess, 'session still in store')
+                assert.notEqual(new Date(sess.cookie.expires).toUTCString(), exp.toUTCString(), 'session cookie expiration updated')
+                done()
+              })
+            })
+          }, (1000 - (Date.now() % 1000) + 200))
+        })
       })
     })
   })
@@ -1420,13 +1486,67 @@ describe('session()', function(){
       });
     })
 
+    it('should not have enumerable methods', function (done) {
+      var app = express()
+        .use(session({ secret: 'keyboard cat', cookie: { maxAge: min }}))
+        .use(function(req, res, next) {
+          req.session.foo = 'foo';
+          req.session.bar = 'bar';
+          var keys = [];
+          for (var key in req.session) {
+            keys.push(key);
+          }
+          res.end(keys.sort().join(','));
+        });
+
+      request(app)
+      .get('/')
+      .expect(200, 'bar,cookie,foo', done);
+    });
+
+    it('should not be set if store is disconnected', function (done) {
+      var store = new session.MemoryStore()
+      var server = createServer({ store: store }, function (req, res) {
+        res.end(typeof req.session)
+      })
+
+      store.emit('disconnect')
+
+      request(server)
+      .get('/')
+      .expect(shouldNotHaveHeader('Set-Cookie'))
+      .expect(200, 'undefined', done)
+    })
+
+    it('should be set when store reconnects', function (done) {
+      var store = new session.MemoryStore()
+      var server = createServer({ store: store }, function (req, res) {
+        res.end(typeof req.session)
+      })
+
+      store.emit('disconnect')
+
+      request(server)
+      .get('/')
+      .expect(shouldNotHaveHeader('Set-Cookie'))
+      .expect(200, 'undefined', function (err) {
+        if (err) return done(err)
+
+        store.emit('connect')
+
+        request(server)
+        .get('/')
+        .expect(200, 'object', done)
+      })
+    })
+
     describe('.destroy()', function(){
       it('should destroy the previous session', function(done){
         var app = express()
           .use(session({ secret: 'keyboard cat' }))
           .use(function(req, res, next){
             req.session.destroy(function(err){
-              if (err) throw err;
+              if (err) return next(err)
               assert(!req.session, 'req.session after destroy');
               res.end();
             });
@@ -1446,7 +1566,7 @@ describe('session()', function(){
           .use(function(req, res, next){
             var id = req.session.id;
             req.session.regenerate(function(err){
-              if (err) throw err;
+              if (err) return next(err)
               assert.notEqual(id, req.session.id)
               res.end();
             });
@@ -1853,6 +1973,7 @@ describe('session()', function(){
           request(app)
           .get('/')
           .expect(200, '1', function (err, res) {
+            if (err) return done(err)
             var a = new Date(expires(res))
             var b = new Date
             var delta = a.valueOf() - b.valueOf()
@@ -1869,6 +1990,7 @@ describe('session()', function(){
           .get('/')
           .set('Cookie', val)
           .expect(200, '2', function (err, res) {
+            if (err) return done(err)
             var a = new Date(expires(res))
             var b = new Date
             var delta = a.valueOf() - b.valueOf()
@@ -1885,6 +2007,7 @@ describe('session()', function(){
           .get('/')
           .set('Cookie', val)
           .expect(200, '3', function (err, res) {
+            if (err) return done(err)
             var a = new Date(expires(res))
             var b = new Date
             var delta = a.valueOf() - b.valueOf()
@@ -2243,11 +2366,12 @@ function writePatch() {
   }
 }
 
-function SyncStore() {
-  this.sessions = Object.create(null);
+function SyncStore () {
+  session.Store.call(this)
+  this.sessions = Object.create(null)
 }
 
-SyncStore.prototype.__proto__ = session.Store.prototype;
+util.inherits(SyncStore, session.Store)
 
 SyncStore.prototype.destroy = function destroy(sid, callback) {
   delete this.sessions[sid];
